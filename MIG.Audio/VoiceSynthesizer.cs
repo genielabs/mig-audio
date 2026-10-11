@@ -163,7 +163,7 @@ public class VoiceSynthesizer : MigInterface
                 if (!restart && IsConnected && _tts != null && _loadedModel == voiceName) return true;
                 token.ThrowIfCancellationRequested();
                 IsConnected = false;
-                if (restart) { _tts?.Dispose(); _tts = null; _loadedModel = null; }
+                if (restart) { DisposeEngine(); _tts = null; _loadedModel = null; }
                 _models.Publish("Download.Error", "");
                 _models.Publish("Download.State", "Idle");
                 _models.Publish("Voice.Status", "Loading");
@@ -191,7 +191,8 @@ public class VoiceSynthesizer : MigInterface
                 config.Model.NumThreads = numThreads;
                 config.Model.Provider = "cpu";
 
-                _tts?.Dispose();
+                DisposeEngine();
+                AudioNativeRuntime.EnsureLoaded();
                 _tts = new OfflineTts(config);
 
                 sw.Stop();
@@ -222,12 +223,20 @@ public class VoiceSynthesizer : MigInterface
         }
     }
 
+    private void DisposeEngine()
+    {
+        if (_tts == null) return;
+        AudioNativeRuntime.EnsureLoaded();
+        _tts.Dispose();
+        _tts = null;
+    }
+
     public void Disconnect()
     {
         _models.Stop();
         lock (_syncLock)
         {
-            _tts?.Dispose();
+            DisposeEngine();
             _tts = null;
             _loadedModel = null;
             IsConnected = false;
@@ -290,6 +299,7 @@ public class VoiceSynthesizer : MigInterface
 
             lock (_syncLock)
             {
+                AudioNativeRuntime.EnsureLoaded();
                 if (speaker >= _tts!.NumSpeakers) throw new ArgumentException("Speaker is not available in this voice.");
                 var generatedAudio = _tts.Generate(textToSpeak, speakerId: speaker, speed: speed);
 

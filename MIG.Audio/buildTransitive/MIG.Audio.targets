@@ -8,4 +8,13 @@
           Visible="false" Pack="false" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"
           TargetPath="runtimes/openvino/%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>
+  <!-- Keep Sherpa's ONNX dependency separate from the consuming application's runtime. -->
+  <ItemGroup>
+    <None Include="$(NuGetPackageRoot)org.k2fsa.sherpa.onnx.runtime.linux-x64/1.13.8/runtimes/linux-x64/native/*.so"
+          Visible="false" Pack="false" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"
+          TargetPath="runtimes/mig-audio/linux-x64/native/%(Filename)%(Extension)" />
+    <None Include="$(NuGetPackageRoot)org.k2fsa.sherpa.onnx.runtime.linux-arm64/1.13.8/runtimes/linux-arm64/native/*.so"
+          Visible="false" Pack="false" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"
+          TargetPath="runtimes/mig-audio/linux-arm64/native/%(Filename)%(Extension)" />
+  </ItemGroup>
 </Project>

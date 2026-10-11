@@ -104,3 +104,17 @@ Enabling an interface starts model preparation in the background and returns imm
 - `Model.Load`: prepare the configured model after an option change.
 
 Download states also include `Stopping` and `Paused`. Cancelling extraction preserves the completed archive so it can be extracted again. Paused downloads do not resume until the interface is enabled again or Resume is requested. All controls and status queries remain responsive during preparation.
+
+### Native ONNX runtime coexistence
+
+On glibc Linux, MIG.Audio loads Sherpa and its bundled ONNX runtime in an isolated loader namespace. The package copies these libraries to `runtimes/mig-audio/<rid>/native`, separate from the host application's ONNX runtime. Keep that directory when deploying or publishing. A native load failure is reported before creating the Sherpa TTS object, avoiding the upstream finalizer crash on missing libraries. Linux requires glibc (`dlmopen`); musl is not supported by this loader.
+
+Native lifecycle regression test (Linux with HomeGenie's ONNX version):
+
+```sh
+OMP_WAIT_POLICY=PASSIVE dotnet run --project Test.WebService -c Release -p:TestHostOnnxConflict=true -- \
+  --native-lifecycle-test \
+  --onnx-runtime="$PWD/Test.WebService/bin/Release/net10.0/runtimes/host-onnx/linux-x64/native/libonnxruntime.so"
+```
+
+This preloads ONNX 1.23.2 in the host namespace, then performs five enable/synthesize/disable cycles on separate threads. The isolated glibc locale tables are initialized on each calling thread before creating, using or disposing Sherpa objects (glibc bug 32483).

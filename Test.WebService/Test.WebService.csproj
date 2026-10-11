@@ -22,5 +22,12 @@
     </Content>
   </ItemGroup>
 
+  <!-- Optional reproduction of HomeGenie's ONNX runtime collision. -->
+  <ItemGroup Condition="'$(TestHostOnnxConflict)' == 'true'">
+        <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.23.2" GeneratePathProperty="true" />
+    <None Include="$(PkgMicrosoft_ML_OnnxRuntime)/runtimes/**/*"
+          Visible="false" Pack="false" CopyToOutputDirectory="PreserveNewest"
+          TargetPath="runtimes/host-onnx/%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
 </Project>
 

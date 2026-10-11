@@ -91,6 +91,7 @@
       
     </ItemGroup>
   </Target>
+  <Import Project="buildTransitive/MIG.Audio.targets" />
 </Project>
 
 

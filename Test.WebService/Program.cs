@@ -44,6 +44,12 @@ namespace Test.WebService
             var loggerFactory = serviceProvider.GetRequiredService<ILoggerFactory>();
             LogManager.Initialize(loggerFactory);
 
+            if (args.Contains("--native-lifecycle-test"))
+            {
+                NativeLifecycleTests.Run(args);
+                return;
+            }
+
             string webPort = args.FirstOrDefault(a => a.StartsWith("--port="))?.Split('=')[1] ?? "8088";
 
             Console.WriteLine("=================================================");

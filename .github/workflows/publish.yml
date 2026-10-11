@@ -58,9 +58,28 @@ jobs:
             artifacts/*.snupkg
           if-no-files-found: error
 
+  native-linux:
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Native lifecycle with host ONNX preloaded
+        env:
+          OMP_WAIT_POLICY: PASSIVE
+        run: |
+          dotnet run --project Test.WebService -c Release -p:TestHostOnnxConflict=true -- \
+            --native-lifecycle-test \
+            --onnx-runtime="$PWD/Test.WebService/bin/Release/net10.0/runtimes/host-onnx/linux-x64/native/libonnxruntime.so"
+
   publish:
     if: github.ref_type == 'tag'
-    needs: build
+    needs: [build, native-linux]
     runs-on: windows-latest
     permissions:
       id-token: write
