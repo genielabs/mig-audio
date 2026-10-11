@@ -69,7 +69,7 @@ The host loads engines on demand and listens on localhost by default. Use `--hos
 
 ## Publishing
 
-AppVeyor builds and tests before packing. Release tags use `v<version>` or `<version>`; development packages have a preview version. Configure the repository-specific GitHub and NuGet credentials before enabling deployment. Credentials in appveyor.yml are encrypted with the AppVeyor account that runs the project. Untagged builds produce artifacts only; tags on main publish the NuGet package and symbols to NuGet.org, then create a GitHub release. Tags containing a prerelease suffix (for example v1.0.0-preview.1) are marked as GitHub prereleases.
+AppVeyor builds and tests before packing. Release tags use `v<version>` or `<version>`; development packages have a preview version. Configure the repository-specific GitHub and NuGet credentials before enabling deployment. Credentials in appveyor.yml are encrypted with the AppVeyor account that runs the project. Untagged builds produce artifacts only; release tags publish the NuGet package and symbols to NuGet.org, then create a GitHub release. Tags containing a prerelease suffix (for example v1.0.0-preview.1) are marked as GitHub prereleases.
 
 Native runtime assets must be verified in restore/publish output for each supported RID. CUDA/Vulkan packaging is not validated by the default CPU build. Package license metadata follows the repository Apache-2.0 LICENSE and source headers.
 
