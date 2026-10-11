@@ -45,6 +45,7 @@ public class VoiceSynthesizer : MigInterface
     };
     private readonly List<InterfaceModule> _modules = new();
     private readonly object _syncLock = new();
+    private readonly object _moduleLock = new();
 
     #region MigInterface Properties & Events
 
@@ -58,9 +59,16 @@ public class VoiceSynthesizer : MigInterface
         }
     }
 
-    public bool IsEnabled { get; set; } = true;
+    private volatile bool _isEnabled = true;
+    private readonly AudioModelJob _models;
+    public bool IsEnabled
+    {
+        get => _isEnabled;
+        set { _isEnabled = value; if (!value) _models.Stop(); }
+    }
 
-    public bool IsConnected { get; private set; }
+    private volatile bool _isConnected;
+    public bool IsConnected { get => _isConnected; private set => _isConnected = value; }
 
     public List<Option> Options
     {
@@ -90,8 +98,10 @@ public class VoiceSynthesizer : MigInterface
 
     public VoiceSynthesizer()
     {
+        _models = new AudioModelJob((property, value) => OnInterfacePropertyChanged(Domain, "service", "Audio model service", property, value));
         // High-level MIG options (Paths are automatically handled by HomeGenie conventions)
 
+        _modules.Add(new InterfaceModule { Domain = Domain, Address = "service", Description = "Audio model service" });
         // Default module (Node "0" represents the local synthesis engine)
         _modules.Add(new InterfaceModule
         {
@@ -105,17 +115,19 @@ public class VoiceSynthesizer : MigInterface
 
     public bool IsDevicePresent() => true;
 
-    public List<InterfaceModule> GetModules() { lock (_syncLock) return new List<InterfaceModule>(_modules); }
+    public List<InterfaceModule> GetModules() { lock (_moduleLock) return new List<InterfaceModule>(_modules); }
 
     #region Options Handling
 
     public void OnSetOption(Option option)
     {
+        if (option.Name.Equals("Voice", StringComparison.OrdinalIgnoreCase)) _models.Stop();
         lock (_syncLock)
         {
             var opt = _options.Find(o => o.Name.Equals(option.Name, StringComparison.OrdinalIgnoreCase));
             if (opt != null)
             {
+                if (option.Name.Equals("Threads", StringComparison.OrdinalIgnoreCase) ) _loadedModel = null;
                 opt.Value = option.Value;
             }
             else
@@ -129,42 +141,40 @@ public class VoiceSynthesizer : MigInterface
 
     #region Lifecycle (Connect / Disconnect)
 
-    public bool Connect() => ConnectEngine(null);
+    public bool Connect()
+    {
+        if (!IsEnabled) return false;
+        _models.Start((token, restart) => ConnectEngine(null, token, restart));
+        return true;
+    }
 
     private string? _loadedModel;
 
-    private bool ConnectEngine(string? selectedModel)
+    private bool ConnectEngine(string? selectedModel, CancellationToken token = default, bool restart = false)
     {
         lock (_syncLock)
         {
             try
             {
+                OnInterfacePropertyChanged(Domain, "0", "Engine Error", "Voice.Error", "");
                 var voiceName = AudioRequest.Identifier(selectedModel ?? GetOption("Voice").Value);
                 if (string.IsNullOrWhiteSpace(voiceName)) voiceName = "it_IT-paola-medium";
 
-                if (IsConnected && _tts != null && _loadedModel == voiceName) return true;
+                if (!restart && IsConnected && _tts != null && _loadedModel == voiceName) return true;
+                token.ThrowIfCancellationRequested();
+                IsConnected = false;
+                if (restart) { _tts?.Dispose(); _tts = null; _loadedModel = null; }
+                _models.Publish("Download.Error", "");
+                _models.Publish("Download.State", "Idle");
+                _models.Publish("Voice.Status", "Loading");
                 // Resolve model directory under <AppBase>/data/models/tts/
                 var ttsBaseDirectory = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "data", "models", "tts");
                 
-                // Support both "vits-piper-voice" and "voice" folder naming conventions
-                var voiceDirectory = Path.Combine(ttsBaseDirectory, $"vits-piper-{voiceName}");
-                if (!Directory.Exists(voiceDirectory))
-                {
-                    voiceDirectory = Path.Combine(ttsBaseDirectory, voiceName);
-                }
-
+                var voiceDirectory = AudioModelDownload.Voice(ttsBaseDirectory, voiceName,
+                    (property, value) => _models.Publish(property, value), token, restart);
                 var modelFile = Path.Combine(voiceDirectory, $"{voiceName}.onnx");
                 var tokensFile = Path.Combine(voiceDirectory, "tokens.txt");
                 var espeakDataDir = Path.Combine(voiceDirectory, "espeak-ng-data");
-
-                if (!File.Exists(modelFile) || !File.Exists(tokensFile))
-                {
-                    string missingMsg = $"Piper TTS model files not found for voice '{voiceName}' at: '{voiceDirectory}'. Please verify .onnx and tokens.txt files.";
-                    MigService.Log.Warn(missingMsg);
-                    OnInterfacePropertyChanged(Domain, "0", "Engine Error", "Voice.Error", missingMsg);
-                    IsConnected = false;
-                    return false;
-                }
 
                 int numThreads = 2;
                 if (int.TryParse(GetOption("Threads").Value, out int configuredThreads) && configuredThreads > 0)
@@ -186,15 +196,25 @@ public class VoiceSynthesizer : MigInterface
 
                 sw.Stop();
                 _loadedModel = voiceName;
+                token.ThrowIfCancellationRequested();
                 IsConnected = true;
+                _models.Publish("Voice.Status", "Ready");
 
                 OnInterfacePropertyChanged(Domain, "0", "Engine Status", "Voice.Status", "Ready");
                 MigService.Log.Info("VoiceSynthesizer initialized in {0}ms with voice '{1}'.", sw.ElapsedMilliseconds, voiceName);
                 return true;
             }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                IsConnected = false;
+                _models.Publish("Download.State", "Paused");
+                _models.Publish("Voice.Status", "Paused");
+                return false;
+            }
             catch (Exception ex)
             {
                 IsConnected = false;
+                _models.Publish("Voice.Status", "Error");
                 MigService.Log.Error("VoiceSynthesizer connect failed: {0}", ex.Message);
                 OnInterfacePropertyChanged(Domain, "0", "Engine Error", "Voice.Error", ex.Message);
                 return false;
@@ -204,12 +224,14 @@ public class VoiceSynthesizer : MigInterface
 
     public void Disconnect()
     {
+        _models.Stop();
         lock (_syncLock)
         {
             _tts?.Dispose();
             _tts = null;
             _loadedModel = null;
             IsConnected = false;
+            _models.Publish("Voice.Status", "Disconnected");
             OnInterfacePropertyChanged(Domain, "0", "Engine Status", "Voice.Status", "Disconnected");
             MigService.Log.Info("VoiceSynthesizer disconnected.");
         }
@@ -221,6 +243,18 @@ public class VoiceSynthesizer : MigInterface
 
     public object InterfaceControl(MigInterfaceCommand request)
     {
+        if (request != null && request.Address == "service")
+        {
+            if (request.Command == "Models.List") return AudioModels.Voices;
+            if (request.Command == "Model.Status") return ModelStatus();
+            if (request.Command == "Download.Stop") { _models.Stop(); return new ResponseStatus(Status.Ok); }
+            if (request.Command is "Download.Resume" or "Download.Restart" or "Model.Load")
+            {
+                if (!IsEnabled) return new ResponseStatus(Status.Error, "Interface disabled.");
+                _models.Start((token, restart) => ConnectEngine(null, token, restart), request.Command == "Download.Restart");
+                return new ResponseStatus(Status.Ok);
+            }
+        }
         lock (_syncLock)
         {
             if (request == null || !IsEnabled) return new ResponseStatus(Status.Error, "Interface disabled or invalid request.");
@@ -240,7 +274,7 @@ public class VoiceSynthesizer : MigInterface
                 var text = AudioRequest.BodyText(request.Data);
                 if (string.IsNullOrWhiteSpace(text)) throw new ArgumentException("Text payload is required.");
                 EnsureModule(address);
-                if (!ConnectEngine(voice)) return new ResponseStatus(Status.Error, "Synthesis engine unavailable.");
+                if (!ConnectEngine(voice, _models.Token)) return new ResponseStatus(Status.Error, "Synthesis engine unavailable.");
                 return ProcessSpeechSynthesis(request, address, text, speed, speaker);
             }
             catch (Exception ex) { return new ResponseStatus(Status.Error, ex.Message); }
@@ -352,10 +386,33 @@ public class VoiceSynthesizer : MigInterface
 
     private void EnsureModule(string address)
     {
-        if (_modules.Exists(m => m.Address == address)) return;
-        _modules.Add(new InterfaceModule { Domain = Domain, Address = address, Description = "Voice channel " + address });
-        InterfaceModulesChanged?.Invoke(this, new InterfaceModulesChangedEventArgs(Domain));
+        lock (_moduleLock)
+        {
+            if (_modules.Exists(m => m.Address == address)) return;
+            _modules.Add(new InterfaceModule { Domain = Domain, Address = address, Description = "Voice channel " + address });
+            InterfaceModulesChanged?.Invoke(this, new InterfaceModulesChangedEventArgs(Domain));
+        }
     }
+    private Dictionary<string, object> ModelStatus()
+    {
+        var model = AudioRequest.Identifier(_options.Find(o => o.Name.Equals("Voice", StringComparison.OrdinalIgnoreCase))?.Value ?? "it_IT-paola-medium");
+        var root = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "data", "models", "tts");
+        var directory = Path.Combine(root, "vits-piper-" + model);
+        if (!AudioModelDownload.VoiceInstalled(directory, model) && AudioModelDownload.VoiceInstalled(Path.Combine(root, model), model)) directory = Path.Combine(root, model);
+        var file = Path.Combine(directory, model + ".onnx");
+        var archive = Path.Combine(root, ".vits-piper-" + model + "-download", "voice.tar.bz2");
+        var partial = File.Exists(archive) ? archive : archive + ".download";
+        var installed = AudioModelDownload.VoiceInstalled(directory, model);
+        var result = _models.Snapshot();
+        result["Model.Name"] = model;
+        result["Model.File"] = file;
+        result["Model.Installed"] = installed;
+        result["Model.Bytes"] = AudioModelDownload.Size(file);
+        result["Model.PartialBytes"] = AudioModelDownload.Size(partial);
+        result["Model.Ready"] = IsConnected && _loadedModel == model;
+        return result;
+    }
+
     private Option GetOption(string name)
     {
         var opt = _options.Find(o => o.Name.Equals(name, StringComparison.OrdinalIgnoreCase));

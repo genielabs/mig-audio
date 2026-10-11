@@ -51,6 +51,7 @@ public class VoiceRecognizer : MigInterface
     };
     private readonly List<InterfaceModule> _modules = new();
     private readonly object _syncLock = new();
+    private readonly object _moduleLock = new();
 
     #region MigInterface Properties & Events
 
@@ -64,9 +65,16 @@ public class VoiceRecognizer : MigInterface
         }
     }
 
-    public bool IsEnabled { get; set; } = true;
+    private volatile bool _isEnabled = true;
+    private readonly AudioModelJob _models;
+    public bool IsEnabled
+    {
+        get => _isEnabled;
+        set { _isEnabled = value; if (!value) _models.Stop(); }
+    }
 
-    public bool IsConnected { get; private set; }
+    private volatile bool _isConnected;
+    public bool IsConnected { get => _isConnected; private set => _isConnected = value; }
 
     public List<Option> Options
     {
@@ -96,7 +104,9 @@ public class VoiceRecognizer : MigInterface
 
     public VoiceRecognizer()
     {
+        _models = new AudioModelJob((property, value) => OnInterfacePropertyChanged(Domain, "service", "Audio model service", property, value));
 
+        _modules.Add(new InterfaceModule { Domain = Domain, Address = "service", Description = "Audio model service" });
         // Default module (Node "0" represents the local engine)
         _modules.Add(new InterfaceModule
         {
@@ -110,12 +120,13 @@ public class VoiceRecognizer : MigInterface
 
     public bool IsDevicePresent() => true;
 
-    public List<InterfaceModule> GetModules() { lock (_syncLock) return new List<InterfaceModule>(_modules); }
+    public List<InterfaceModule> GetModules() { lock (_moduleLock) return new List<InterfaceModule>(_modules); }
 
     #region Options Handling
 
     public void OnSetOption(Option option)
     {
+        if (option.Name.Equals("ModelName", StringComparison.OrdinalIgnoreCase)) _models.Stop();
         lock (_syncLock)
         {
             var opt = _options.Find(o => o.Name.Equals(option.Name, StringComparison.OrdinalIgnoreCase));
@@ -134,20 +145,32 @@ public class VoiceRecognizer : MigInterface
 
     #region Lifecycle (Connect / Disconnect)
 
-    public bool Connect() => ConnectEngine(null);
+    public bool Connect()
+    {
+        if (!IsEnabled) return false;
+        _models.Start((token, restart) => ConnectEngine(null, token, restart));
+        return true;
+    }
 
     private string? _loadedModel;
 
-    private bool ConnectEngine(string? selectedModel)
+    private bool ConnectEngine(string? selectedModel, CancellationToken token = default, bool restart = false)
     {
         lock (_syncLock)
         {
             try
             {
+                OnInterfacePropertyChanged(Domain, "0", "Engine Error", "Voice.Error", "");
                 var modelFile = AudioRequest.Model(selectedModel ?? GetOption("ModelName").Value);
                 if (string.IsNullOrWhiteSpace(modelFile)) modelFile = "ggml-base.bin";
 
-                if (IsConnected && _factory != null && _loadedModel == modelFile) return true;
+                if (!restart && IsConnected && _factory != null && _loadedModel == modelFile) return true;
+                token.ThrowIfCancellationRequested();
+                IsConnected = false;
+                if (restart) { _factory?.Dispose(); _factory = null; _loadedModel = null; }
+                _models.Publish("Download.Error", "");
+                _models.Publish("Download.State", "Idle");
+                _models.Publish("Voice.Status", "Loading");
                 // Model path anchored to HomeGenie application base directory
                 var asrDirectory = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "data", "models", "asr");
                 var fullModelPath = Path.Combine(asrDirectory, modelFile);
@@ -155,10 +178,10 @@ public class VoiceRecognizer : MigInterface
                 Directory.CreateDirectory(asrDirectory);
 
                 // Automatically download model if missing locally
-                if (!File.Exists(fullModelPath))
+                if (restart || !File.Exists(fullModelPath) || File.Exists(fullModelPath + ".download"))
                 {
                     MigService.Log.Info("Model not found locally. Downloading '{0}' to '{1}'...", modelFile, fullModelPath);
-                    DownloadModelAsync(modelFile, fullModelPath).GetAwaiter().GetResult();
+                    DownloadModelAsync(modelFile, fullModelPath, token, restart).GetAwaiter().GetResult();
                     MigService.Log.Info("Model download completed successfully.");
                 }
                 else
@@ -198,15 +221,25 @@ public class VoiceRecognizer : MigInterface
 
                 sw.Stop();
                 _loadedModel = modelFile;
+                token.ThrowIfCancellationRequested();
                 IsConnected = true;
+                _models.Publish("Voice.Status", "Ready");
 
                 OnInterfacePropertyChanged(Domain, "0", "Engine Status", "Voice.Status", "Ready");
                 MigService.Log.Info("VoiceRecognizer engine ready in {0}ms.", sw.ElapsedMilliseconds);
                 return true;
             }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                IsConnected = false;
+                _models.Publish("Download.State", "Paused");
+                _models.Publish("Voice.Status", "Paused");
+                return false;
+            }
             catch (Exception ex)
             {
                 IsConnected = false;
+                _models.Publish("Voice.Status", "Error");
                 MigService.Log.Error("VoiceRecognizer connect failed: {0}", ex.Message);
                 OnInterfacePropertyChanged(Domain, "0", "Engine Error", "Voice.Error", ex.Message);
                 return false;
@@ -216,12 +249,14 @@ public class VoiceRecognizer : MigInterface
 
     public void Disconnect()
     {
+        _models.Stop();
         lock (_syncLock)
         {
             _factory?.Dispose();
             _factory = null;
             _loadedModel = null;
             IsConnected = false;
+            _models.Publish("Voice.Status", "Disconnected");
             OnInterfacePropertyChanged(Domain, "0", "Engine Status", "Voice.Status", "Disconnected");
             MigService.Log.Info("VoiceRecognizer disconnected.");
         }
@@ -233,6 +268,18 @@ public class VoiceRecognizer : MigInterface
 
     public object InterfaceControl(MigInterfaceCommand request)
     {
+        if (request != null && request.Address == "service")
+        {
+            if (request.Command == "Models.List") return AudioModels.Recognition;
+            if (request.Command == "Model.Status") return ModelStatus();
+            if (request.Command == "Download.Stop") { _models.Stop(); return new ResponseStatus(Status.Ok); }
+            if (request.Command is "Download.Resume" or "Download.Restart" or "Model.Load")
+            {
+                if (!IsEnabled) return new ResponseStatus(Status.Error, "Interface disabled.");
+                _models.Start((token, restart) => ConnectEngine(null, token, restart), request.Command == "Download.Restart");
+                return new ResponseStatus(Status.Ok);
+            }
+        }
         lock (_syncLock)
         {
             if (request == null || !IsEnabled) return new ResponseStatus(Status.Error, "Interface disabled or invalid request.");
@@ -252,7 +299,7 @@ public class VoiceRecognizer : MigInterface
                 AudioRequest.Duration(rawAudio);
                 var model = AudioRequest.Model(AudioRequest.Option(request, 1, GetOption("ModelName").Value));
                 EnsureModule(address);
-                if (!ConnectEngine(model)) return new ResponseStatus(Status.Error, "Recognition engine unavailable.");
+                if (!ConnectEngine(model, _models.Token)) return new ResponseStatus(Status.Error, "Recognition engine unavailable.");
                 return ProcessTranscription(rawAudio, address, languageOption);
             }
             catch (Exception ex) { return new ResponseStatus(Status.Error, ex.Message); }
@@ -414,25 +461,16 @@ public class VoiceRecognizer : MigInterface
         return wavStream;
     }
 
-    private static async Task DownloadModelAsync(string modelFileName, string destinationPath)
+    private async Task DownloadModelAsync(string modelFileName, string destinationPath, CancellationToken token, bool restart)
     {
-        var type = modelFileName.ToLowerInvariant() switch
-        {
-            "ggml-tiny.bin" => GgmlType.Tiny,
-            "ggml-tiny.en.bin" => GgmlType.TinyEn,
-            "ggml-base.bin" => GgmlType.Base,
-            "ggml-base.en.bin" => GgmlType.BaseEn,
-            "ggml-small.bin" => GgmlType.Small,
-            "ggml-small.en.bin" => GgmlType.SmallEn,
-            "ggml-medium.bin" => GgmlType.Medium,
-            "ggml-medium.en.bin" => GgmlType.MediumEn,
-            _ => throw new ArgumentException("Model is not installed and has no supported automatic download.")
-        };
-        using var modelStream = await WhisperGgmlDownloader.Default.GetGgmlModelAsync(type);
-        using var fileWriter = new FileStream(destinationPath + ".download", FileMode.Create, FileAccess.Write);
-        await modelStream.CopyToAsync(fileWriter);
-        fileWriter.Close();
-        File.Move(destinationPath + ".download", destinationPath, overwrite: true);
+        var supported = new[] { "ggml-tiny.bin", "ggml-tiny.en.bin", "ggml-base.bin", "ggml-base.en.bin",
+            "ggml-small.bin", "ggml-small.en.bin", "ggml-medium.bin", "ggml-medium.en.bin" };
+        if (!supported.Contains(modelFileName.ToLowerInvariant()))
+            throw new ArgumentException("Model is not installed and has no supported automatic download.");
+        void Emit(string property, object value) => _models.Publish(property, value);
+        Emit("Download.Model", modelFileName);
+        await AudioModelDownload.FileAsync("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/" + modelFileName.ToLowerInvariant(), destinationPath, Emit, token, restart);
+        Emit("Download.State", "Completed");
     }
 
     protected virtual void OnInterfacePropertyChanged(string domain, string source, string description, string propertyPath, object propertyValue)
@@ -446,10 +484,30 @@ public class VoiceRecognizer : MigInterface
 
     private void EnsureModule(string address)
     {
-        if (_modules.Exists(m => m.Address == address)) return;
-        _modules.Add(new InterfaceModule { Domain = Domain, Address = address, Description = "Voice channel " + address });
-        InterfaceModulesChanged?.Invoke(this, new InterfaceModulesChangedEventArgs(Domain));
+        lock (_moduleLock)
+        {
+            if (_modules.Exists(m => m.Address == address)) return;
+            _modules.Add(new InterfaceModule { Domain = Domain, Address = address, Description = "Voice channel " + address });
+            InterfaceModulesChanged?.Invoke(this, new InterfaceModulesChangedEventArgs(Domain));
+        }
     }
+    private Dictionary<string, object> ModelStatus()
+    {
+        var model = AudioRequest.Model(_options.Find(o => o.Name.Equals("ModelName", StringComparison.OrdinalIgnoreCase))?.Value ?? "ggml-base.bin");
+        var root = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "data", "models", "asr");
+        var file = Path.Combine(root, model);
+        var partial = file + ".download";
+        var installed = AudioModelDownload.Size(file) > 0;
+        var result = _models.Snapshot();
+        result["Model.Name"] = model;
+        result["Model.File"] = file;
+        result["Model.Installed"] = installed;
+        result["Model.Bytes"] = AudioModelDownload.Size(file);
+        result["Model.PartialBytes"] = AudioModelDownload.Size(partial);
+        result["Model.Ready"] = IsConnected && _loadedModel == model;
+        return result;
+    }
+
     private Option GetOption(string name)
     {
         var opt = _options.Find(o => o.Name.Equals(name, StringComparison.OrdinalIgnoreCase));

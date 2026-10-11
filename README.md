@@ -52,7 +52,7 @@ Synthesizer defaults: `Voice=it_IT-paola-medium`, `Speed=1.0`, `Threads=2`.
 
 Recognition models reside under `<AppBase>/data/models/asr/`. Missing tiny, base, small and medium models (including `.en`) are downloaded automatically. Downloads are written to a temporary file before replacing the final file. Other model names require an installed file.
 
-Piper voices must be installed under `<AppBase>/data/models/tts/vits-piper-<voice>/` or `<AppBase>/data/models/tts/<voice>/`. Each voice requires `<voice>.onnx`, `tokens.txt`, and the voice's `espeak-ng-data` when applicable. Use sherpa-onnx-compatible Piper bundles. TTS does not download models automatically.
+Piper voices must be installed under `<AppBase>/data/models/tts/vits-piper-<voice>/` or `<AppBase>/data/models/tts/<voice>/`. Each voice requires `<voice>.onnx`, `tokens.txt`, and the voice's `espeak-ng-data` when applicable. Use sherpa-onnx-compatible Piper bundles. Missing voices are downloaded automatically from the official sherpa-onnx `tts-models` release, extracted into a staging directory, and installed only after validating the model, tokens and espeak data. Existing compatible installations are reused.
 
 ## Build and testing
 
@@ -87,3 +87,20 @@ Native runtime assets must be verified in restore/publish output for each suppor
 
 Apache-2.0. See LICENSE. Models and dependencies retain their own licenses.
 
+
+### Model service events
+
+Each audio interface exposes a `service` module, separate from chat addresses. Model preparation emits `Download.Model`, `Download.State` (`Idle`, `Downloading`, `Extracting`, `Completed`, `Error`), `Download.Progress` (0–100, or -1 for unknown length), `Download.Bytes`, `Download.TotalBytes` and `Download.Error`. `Voice.Status` on this module reports `Loading`, `Ready` or `Error`; download completion does not imply engine readiness. Downloads are automatic when the interface connects or a requested model is first used. Failed downloads never replace an installed model.
+
+### Model download controls
+
+Enabling an interface starts model preparation in the background and returns immediately. Disabling cancels preparation and retains partial downloads. Service commands use `/api/<domain>/service/`:
+
+- `Models.List`: known model identifiers (Whisper models or Piper voices from the official sherpa-onnx catalog).
+- `Model.Status`: selected model, full file path, installed flag, file and partial download sizes, readiness and last service events.
+- `Download.Stop`: pause preparation, retaining downloaded data.
+- `Download.Resume`: resume preparation, using HTTP Range and If-Range validators where supported; otherwise restart the transfer safely.
+- `Download.Restart`: download again from the beginning, replacing the installed model only after the new download has completed and been validated.
+- `Model.Load`: prepare the configured model after an option change.
+
+Download states also include `Stopping` and `Paused`. Cancelling extraction preserves the completed archive so it can be extracted again. Paused downloads do not resume until the interface is enabled again or Resume is requested. All controls and status queries remain responsive during preparation.

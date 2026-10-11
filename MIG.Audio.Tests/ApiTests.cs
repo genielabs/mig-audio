@@ -74,7 +74,7 @@ public class ApiTests
     {
         var synth = new VoiceSynthesizer { IsEnabled = false };
         synth.InterfaceControl(new MigInterfaceCommand("Audio.VoiceSynthesizer/chat/Voice.Synthesize", "hello"));
-        Assert.That(synth.GetModules().Count, Is.EqualTo(1));
+        Assert.That(synth.GetModules().Select(m => m.Address), Is.EquivalentTo(new[] { "0", "service" }));
         Assert.That(synth.IsConnected, Is.False);
     }
     [Test]
@@ -82,7 +82,7 @@ public class ApiTests
     {
         var synth = new VoiceSynthesizer(); var order = new List<string>();
         synth.InterfaceModulesChanged += (_, _) => order.Add("module");
-        synth.InterfacePropertyChanged += (_, _) => order.Add("property");
+        synth.InterfacePropertyChanged += (_, _) => { var first = !order.Contains("property"); order.Add("property"); if (first) throw new InvalidOperationException("Stop before native engine initialization"); };
         synth.InterfaceControl(new MigInterfaceCommand("Audio.VoiceSynthesizer/chat-1/Voice.Synthesize/1.2/nonexistent-test-voice", "hello"));
         Assert.That(order[0], Is.EqualTo("module"));
         Assert.That(synth.GetModules().Any(m => m.Address == "chat-1"), Is.True);

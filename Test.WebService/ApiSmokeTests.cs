@@ -40,7 +40,19 @@ internal static class ApiSmokeTests
             if (!parsed.RootElement.TryGetProperty("ResponseValue", out var actual) || actual.GetString() != expected.Item3)
                 throw new InvalidOperationException($"Missing startup default {expected.Item1}/{expected.Item2}: {response}");
         }
-        Console.WriteLine("PASS defaults available before audio requests");
+        foreach (var domain in new[] { "Audio.VoiceRecognizer", "Audio.VoiceSynthesizer" })
+            if (!service.GetInterface(domain).GetModules().Any(m => m.Address == "service"))
+                throw new InvalidOperationException("Missing audio model service module.");
+        foreach (var domain in new[] { "Audio.VoiceRecognizer", "Audio.VoiceSynthesizer" })
+        {
+            using var catalog = JsonDocument.Parse(await client.GetStringAsync($"api/{domain}/service/Models.List"));
+            if (catalog.RootElement.ValueKind != JsonValueKind.Array || catalog.RootElement.GetArrayLength() == 0)
+                throw new InvalidOperationException("Missing model catalog.");
+            using var model = JsonDocument.Parse(await client.GetStringAsync($"api/{domain}/service/Model.Status"));
+            if (!model.RootElement.TryGetProperty("Model.File", out _) || !model.RootElement.TryGetProperty("Model.Installed", out _))
+                throw new InvalidOperationException("Missing model file status.");
+        }
+        Console.WriteLine("PASS defaults and model service modules available before audio requests");
         var text = Encoding.UTF8.GetBytes("Ciao, questa è una prova della voce locale.");
         await Error("Audio.VoiceSynthesizer/chat-a/Voice.Synthesize/0", text);
         await Error("Audio.VoiceSynthesizer/chat-a/Voice.Synthesize/NaN", text);
