@@ -7,7 +7,7 @@ install:
   - ps: |
       $ErrorActionPreference = 'Stop'
       Invoke-WebRequest -Uri 'https://dot.net/v1/dotnet-install.ps1' -OutFile "$env:temp\dotnet-install.ps1"
-      & "$env:temp\dotnet-install.ps1" -Channel 10.0 -InstallDir "$env:ProgramFiles\dotnet"
+      & powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:temp\dotnet-install.ps1" -Channel 10.0 -InstallDir "$env:ProgramFiles\dotnet"
       if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 configuration: Release
 build_script:
