@@ -1,0 +1,112 @@
+name: Build and publish MIG.Audio
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mig-audio-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Determine package version
+        id: version
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $version = $env:GITHUB_REF_NAME -replace '^v', ''
+            if ($version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$') {
+              throw 'Expected a tag such as v1.0.0 or v1.0.0-preview.3'
+            }
+          } else {
+            $version = "1.0.0-preview.ci.$env:GITHUB_RUN_NUMBER"
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "prerelease=$(($version -match '-').ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+      - name: Build
+        run: dotnet build MIG.Audio.sln -c Release
+      - name: Unit tests
+        run: dotnet test MIG.Audio.Tests/MIG.Audio.Tests.csproj -c Release --no-build
+      - name: HTTP tests
+        run: dotnet run --project Test.WebService -c Release --no-build -- --port=18088 --self-test
+      - name: Pack
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+        run: dotnet pack MIG.Audio/MIG.Audio.csproj -c Release --output artifacts /p:PackageVersion=$env:PACKAGE_VERSION
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nuget-packages
+          path: |
+            artifacts/*.nupkg
+            artifacts/*.snupkg
+          if-no-files-found: error
+
+  publish:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: windows-latest
+    permissions:
+      id-token: write
+      contents: write
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/download-artifact@v4
+        with:
+          name: nuget-packages
+          path: artifacts
+      - name: NuGet login with trusted publishing
+        id: login
+        uses: NuGet/login@v1
+        with:
+          user: G-Labs
+      - name: Publish package and symbols to NuGet
+        shell: pwsh
+        env:
+          NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
+        run: |
+          $package = @(Get-ChildItem -LiteralPath artifacts -Filter 'MIG.Audio.*.nupkg')
+          $symbols = @(Get-ChildItem -LiteralPath artifacts -Filter 'MIG.Audio.*.snupkg')
+          if ($package.Count -ne 1 -or $symbols.Count -ne 1) {
+            throw 'Expected exactly one NuGet package and one symbol package'
+          }
+          dotnet nuget push $package[0].FullName --api-key $env:NUGET_API_KEY --source https://api.nuget.org/v3/index.json --no-symbols --skip-duplicate
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet nuget push $symbols[0].FullName --api-key $env:NUGET_API_KEY --source https://api.nuget.org/v3/index.json --skip-duplicate
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Publish GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          IS_PRERELEASE: ${{ needs.build.outputs.prerelease }}
+        run: |
+          $assets = @(Get-ChildItem -LiteralPath artifacts -File | ForEach-Object FullName)
+          gh release view $env:RELEASE_TAG --repo $env:GH_REPO *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $env:RELEASE_TAG @assets --repo $env:GH_REPO --clobber
+          } else {
+            $releaseArgs = @('release', 'create', $env:RELEASE_TAG) + $assets + @('--repo', $env:GH_REPO, '--verify-tag', '--title', "MIG.Audio $env:RELEASE_TAG", '--notes', 'Local speech recognition and synthesis for MIG and HomeGenie. See README for API usage and model installation.')
+            if ($env:IS_PRERELEASE -eq 'true') { $releaseArgs += '--prerelease' }
+            gh @releaseArgs
+          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

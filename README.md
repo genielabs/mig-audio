@@ -69,7 +69,11 @@ The host loads engines on demand and listens on localhost by default. Use `--hos
 
 ## Publishing
 
-AppVeyor builds and tests before packing. Release tags use `v<version>` or `<version>`; development packages have a preview version. Configure the repository-specific GitHub and NuGet credentials before enabling deployment. Credentials in appveyor.yml are encrypted with the AppVeyor account that runs the project. Untagged builds produce artifacts only; release tags publish the NuGet package and symbols to NuGet.org, then create a GitHub release. Tags containing a prerelease suffix (for example v1.0.0-preview.1) are marked as GitHub prereleases.
+GitHub Actions (`.github/workflows/publish.yml`) builds, runs unit and HTTP tests, and packs on pushes to main and version tags. Only tags of the form `v<version>` publish to NuGet.org and create a GitHub release. For example, `v1.0.0-preview.3` publishes a preview and marks the GitHub release as a prerelease. Untagged builds produce downloadable artifacts only.
+
+NuGet publishing uses `NuGet/login@v1` and GitHub OIDC, without a stored API key. Configure a NuGet trusted publishing policy for repository owner `genielabs`, repository `mig-audio`, workflow file `publish.yml` (file name only), no environment, push-new-packages-and-versions scope, and package pattern `MIG.Audio`. The workflow uses NuGet profile `G-Labs`. GitHub releases use the workflow's temporary `GITHUB_TOKEN`. Re-running a tag build skips package versions already uploaded and retries symbol/release uploads.
+
+AppVeyor remains an independent build, test and packaging check; its deployments are disabled. No long-lived publishing credentials are needed in either CI configuration.
 
 Native runtime assets must be verified in restore/publish output for each supported RID. CUDA/Vulkan packaging is not validated by the default CPU build. Package license metadata follows the repository Apache-2.0 LICENSE and source headers.
 

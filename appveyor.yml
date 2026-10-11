@@ -1,8 +1,5 @@
 version: 1.0.{build}
 image: Visual Studio 2022
-environment:
-  MIG_AUDIO_NUGET_API_KEY:
-    secure: VLSz2Mm3RJU7/uhvY1kOSfewPUL43YB7sxMOadvqUyrIFcU2DV2S84mtuySIJJX0
 install:
   - ps: |
       $ErrorActionPreference = 'Stop'
@@ -26,8 +23,6 @@ after_test:
       } else {
         $pkgVersion = "1.0.0-preview.build.$env:APPVEYOR_BUILD_NUMBER"
       }
-      $isPrerelease = ($pkgVersion -match '-').ToString().ToLowerInvariant()
-      Set-AppveyorBuildVariable -Name MIG_AUDIO_PRERELEASE -Value $isPrerelease
       dotnet pack MIG.Audio/MIG.Audio.csproj -c Release --output artifacts /p:PackageVersion=$pkgVersion
       if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 artifacts:
@@ -35,28 +30,4 @@ artifacts:
     name: NuGet Package
   - path: 'artifacts\*.snupkg'
     name: Symbols Package
-before_deploy:
-  - ps: |
-      if ($env:APPVEYOR_REPO_TAG -ne "true") { return }
-      $ErrorActionPreference = 'Stop'
-      $package = Get-ChildItem -LiteralPath artifacts -Filter 'MIG.Audio.*.nupkg'
-      $symbols = Get-ChildItem -LiteralPath artifacts -Filter 'MIG.Audio.*.snupkg'
-      if (@($package).Count -ne 1 -or @($symbols).Count -ne 1) {
-        throw 'Expected exactly one NuGet package and one symbol package'
-      }
-      dotnet nuget push $package.FullName --api-key $env:MIG_AUDIO_NUGET_API_KEY --source https://api.nuget.org/v3/index.json --no-symbols --skip-duplicate
-      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      dotnet nuget push $symbols.FullName --api-key $env:MIG_AUDIO_NUGET_API_KEY --source https://api.nuget.org/v3/index.json --skip-duplicate
-      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-deploy:
-  - provider: GitHub
-    tag: $(APPVEYOR_REPO_TAG_NAME)
-    release: MIG.Audio $(APPVEYOR_REPO_TAG_NAME)
-    description: Local speech recognition and synthesis for MIG and HomeGenie. See README for API usage, model installation and supported runtimes.
-    auth_token:
-      secure: QJoBiqbeg1z+3WRoH1IdXRsnXtvwS95U2Z89JH9DrnEhJYMYbRpKjUmGEbOU3OnDLFz8gKqzP8y7KpL226lCb/Y+W6CTt7EGouenMIKnzZBllZVvSG73LdhHgD8RbxIy
-    artifact: NuGet Package, Symbols Package
-    draft: false
-    prerelease: $(MIG_AUDIO_PRERELEASE)
-    on:
-      appveyor_repo_tag: true
+deploy: off
