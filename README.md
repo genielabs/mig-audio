@@ -6,7 +6,7 @@ Requires .NET 10. Recognition uses Whisper.net; synthesis uses Piper VITS via sh
 
 ## HTTP API
 
-All examples use HTTP POST. Path parameters are positional; omitted values or the literal `default` use the interface configuration. Overrides apply only to the current request.
+Transcription and synthesis examples use HTTP POST; model-service examples use GET. Path parameters are positional; omitted values or the literal `default` use the interface configuration. Overrides apply only to the current request.
 
 | Domain / command | Parameters after command | POST body | Result |
 | --- | --- | --- | --- |
@@ -30,6 +30,50 @@ Recognition input must be PCM mono, 16 kHz, 16-bit signed samples, little endian
 
 MIG errors return a JSON `ResponseStatus`, potentially with HTTP 200 according to gateway behavior. Clients requesting a WAV must distinguish JSON errors from binary success. The current MIG gateway does not explicitly set an audio MIME type for an interface's binary result; browser clients can create an `audio/wav` Blob.
 
+### Request parameters
+
+Every URL starts with `/api/`. `{address}` identifies the chat/module receiving events; it is not a model identifier. Use `0` for a single channel, or a distinct address such as `chat-1` for each conversation. The reserved `service` address is for model management.
+
+| Interface | Position | Parameter | Default | Accepted values |
+| --- | --- | --- | --- | --- |
+| Recognizer | 1 | `language` | configured `Language` (`auto`) | Whisper language code such as `it`, `en`, `fr`, or `auto` for detection |
+| Recognizer | 2 | `model` | configured `ModelName` (`ggml-base.bin`) | Model identifier, such as `base`, `base.en`, or `ggml-base.bin` |
+| Synthesizer | 1 | `speed` | configured `Speed` (`1.0`) | Finite positive number; `1.15` is faster and `0.85` is slower |
+| Synthesizer | 2 | `voice` | configured `Voice` (`it_IT-paola-medium`) | Installed or downloadable Piper voice identifier |
+| Synthesizer | 3 | `speaker` | `0` | Non-negative speaker index supported by the selected voice |
+
+Use `default` to leave an earlier position unchanged while overriding a later one. English-only recognition models (`.en`) should be used with English. Threads and acceleration are interface options, not per-request URL parameters.
+
+```sh
+# Use all configured defaults.
+curl --data-binary @recording.wav -H 'Content-Type: audio/wav' \
+  http://localhost:8088/api/Audio.VoiceRecognizer/chat-1/Voice.Transcribe
+
+# Keep the configured language, but select the small recognition model.
+curl --data-binary @recording.wav -H 'Content-Type: audio/wav' \
+  http://localhost:8088/api/Audio.VoiceRecognizer/chat-1/Voice.Transcribe/default/small
+
+# Change only speed; text is always the POST body.
+curl --data-binary 'Questa voce viene generata sul server.' \
+  -H 'Content-Type: text/plain; charset=utf-8' \
+  http://localhost:8088/api/Audio.VoiceSynthesizer/chat-1/Voice.Speak/0.85 \
+  --output response.wav
+
+# Keep speed unchanged and choose a voice.
+curl --data-binary 'Ciao!' -H 'Content-Type: text/plain; charset=utf-8' \
+  http://localhost:8088/api/Audio.VoiceSynthesizer/chat-2/Voice.Synthesize/default/it_IT-paola-medium \
+  --output response.wav
+```
+
+### Default-setting commands
+
+| Command | Value | Result |
+| --- | --- | --- |
+| `/api/Audio.VoiceRecognizer/0/Voice.SetLanguage/it` | First path parameter or UTF-8 POST body | MIG `ResponseStatus` |
+| `/api/Audio.VoiceSynthesizer/0/Voice.SetSpeed/1.15` | First path parameter or UTF-8 POST body | MIG `ResponseStatus` |
+
+These commands change the running interface defaults; they do not select a separate engine for each address. Use the host application's interface configuration API to persist options across restarts.
+
 ## Channels and events
 
 `0` is the default module. Each new address creates an interface module before publishing request events, then raises `InterfaceModulesChanged`. Reuse addresses for chat channels. Modules remain for the lifetime of the interface; there is currently no release command or disk persistence of the channel registry.
@@ -42,11 +86,19 @@ Engine readiness/errors use module `0`; request results use the requested addres
 
 ## Interface configuration
 
-Recognizer defaults: `ModelName=ggml-base.bin`, `Language=auto`, `Threads=6`, `Acceleration=cpu`.
+| Domain | Option | Default | Purpose |
+| --- | --- | --- | --- |
+| `Audio.VoiceRecognizer` | `ModelName` | `ggml-base.bin` | Default recognition model |
+| `Audio.VoiceRecognizer` | `Language` | `auto` | Default language or automatic detection |
+| `Audio.VoiceRecognizer` | `Threads` | `6` | Positive processing thread count |
+| `Audio.VoiceRecognizer` | `Acceleration` | `cpu` | `cpu` or `gpu`; changing mode requires a host restart |
+| `Audio.VoiceSynthesizer` | `Voice` | `it_IT-paola-medium` | Default Piper voice |
+| `Audio.VoiceSynthesizer` | `Speed` | `1.0` | Default positive synthesis speed |
+| `Audio.VoiceSynthesizer` | `Threads` | `2` | Positive processing thread count |
 
-Synthesizer defaults: `Voice=it_IT-paola-medium`, `Speed=1.0`, `Threads=2`.
+Register both domains with `AssemblyName="MIG.Audio.dll"` in the MIG host configuration. Enable each interface independently; disabled interfaces do not initialize their engine.
 
-`Voice.SetLanguage` and `Voice.SetSpeed` change defaults explicitly, accepting a UTF-8 POST body or their first path option. Disabled interfaces reject requests. Whisper runtime selection is process-wide: changing CPU/GPU mode after initialization requires a process restart. CPU is the tested baseline; GPU runtime variants need separate validation on suitable hardware.
+`Voice.SetLanguage` and `Voice.SetSpeed` change defaults explicitly, accepting a UTF-8 POST body or their first path option. Disabled interfaces reject requests. Whisper runtime selection is process-wide: changing CPU/GPU mode after initialization requires a process restart. CPU is the tested baseline; GPU requests may fall back to CPU if engine initialization fails. GPU runtime variants need separate validation on suitable hardware.
 
 ## Models
 
@@ -83,14 +135,11 @@ Native runtime assets must be verified in restore/publish output for each suppor
 - [Whisper.net](https://github.com/nikstra/whisper.net)
 - [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)
 
-## License
-
-Apache-2.0. See LICENSE. Models and dependencies retain their own licenses.
-
+## Model management
 
 ### Model service events
 
-Each audio interface exposes a `service` module, separate from chat addresses. Model preparation emits `Download.Model`, `Download.State` (`Idle`, `Downloading`, `Extracting`, `Completed`, `Error`), `Download.Progress` (0–100, or -1 for unknown length), `Download.Bytes`, `Download.TotalBytes` and `Download.Error`. `Voice.Status` on this module reports `Loading`, `Ready` or `Error`; download completion does not imply engine readiness. Downloads are automatic when the interface connects or a requested model is first used. Failed downloads never replace an installed model.
+Each audio interface exposes a `service` module, separate from chat addresses. Model preparation emits `Download.Model`, `Download.State` (`Idle`, `Downloading`, `Extracting`, `Completed`, `Error`), `Download.Progress` (0–100, or -1 for unknown length), `Download.Bytes`, `Download.TotalBytes` and `Download.Error`. `Voice.Status` on this module reports `Loading`, `Ready`, `Error` or `Disconnected`; download completion does not imply engine readiness. Downloads are automatic when the interface connects or a requested model is first used. Failed downloads never replace an installed model.
 
 ### Model download controls
 
@@ -102,6 +151,19 @@ Enabling an interface starts model preparation in the background and returns imm
 - `Download.Resume`: resume preparation, using HTTP Range and If-Range validators where supported; otherwise restart the transfer safely.
 - `Download.Restart`: download again from the beginning, replacing the installed model only after the new download has completed and been validated.
 - `Model.Load`: prepare the configured model after an option change.
+
+Example service requests (replace the domain with `Audio.VoiceSynthesizer` for voices):
+
+```sh
+curl http://localhost:8088/api/Audio.VoiceRecognizer/service/Models.List
+curl http://localhost:8088/api/Audio.VoiceRecognizer/service/Model.Status
+curl http://localhost:8088/api/Audio.VoiceRecognizer/service/Download.Stop
+curl http://localhost:8088/api/Audio.VoiceRecognizer/service/Download.Resume
+curl http://localhost:8088/api/Audio.VoiceRecognizer/service/Download.Restart
+curl http://localhost:8088/api/Audio.VoiceRecognizer/service/Model.Load
+```
+
+Status and catalog queries return JSON objects/arrays; preparation controls return MIG `ResponseStatus`. `Download.Stop` remains available when disabled; Resume, Restart and Model.Load require an enabled interface. Service commands do not take a text or audio payload.
 
 Download states also include `Stopping` and `Paused`. Cancelling extraction preserves the completed archive so it can be extracted again. Paused downloads do not resume until the interface is enabled again or Resume is requested. All controls and status queries remain responsive during preparation.
 
@@ -118,3 +180,13 @@ OMP_WAIT_POLICY=PASSIVE dotnet run --project Test.WebService -c Release -p:TestH
 ```
 
 This preloads ONNX 1.23.2 in the host namespace, then performs five enable/synthesize/disable cycles on separate threads. The isolated glibc locale tables are initialized on each calling thread before creating, using or disposing Sherpa objects (glibc bug 32483).
+
+## Browser integration
+
+Capture microphone audio in the client, convert it to mono 16 kHz PCM16 WAV, and POST it to `Voice.Transcribe`. Read the recognized text from `ResponseValue` and let the user review it before sending a chat message. Browser microphone access requires HTTPS or localhost; an ordinary HTTP LAN address cannot grant microphone access.
+
+POST the assistant's text to `Voice.Synthesize`, check for JSON errors, and play the returned WAV on the client. This interface generates audio; it does not play it through the server's speakers. Recognition and synthesis can be combined with either local or cloud language models.
+
+## License
+
+Apache-2.0. See LICENSE. Models and dependencies retain their own licenses.

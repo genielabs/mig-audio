@@ -37,7 +37,7 @@ This project follows *Microsoft .Net* [coding conventions](https://docs.microsof
 
 To release a new version push a new tag using the format:
 
-`v<major>.<minor>.<patch>` (tags without the `v` prefix are also accepted)
+`v<major>.<minor>.<patch>` (the `v` prefix is required by the publishing workflow)
 
 examples: `v1.0.0`, `v1.0.1-pre1`
 
