@@ -1,0 +1,100 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+
+    <!-- Package Metadata -->
+    <PackageId>MIG.Audio</PackageId>
+    <Version>1.0.0</Version>
+    <Authors>G-Labs</Authors>
+    <Company>G-Labs</Company>
+    <Product>Modular Integrated Gateway</Product>
+    <Description>Local speech recognition and synthesis for MIG and HomeGenie, powered by Whisper.net and Piper via sherpa-onnx.</Description>
+    <PackageProjectUrl>https://github.com/genielabs/mig-audio</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/genielabs/mig-audio.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>mig;homegenie;iot;audio;speech;whisper;piper;voice;stt;asr;tts</PackageTags>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+
+    <!-- Build Options -->
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MIG" Version="1.3.11" />
+  </ItemGroup>
+
+  <!-- Whisper.net Core & Multiplatform CPU Runtime (Default Baseline) -->
+  <ItemGroup>
+    <PackageReference Include="Whisper.net" Version="1.9.1" />
+    <PackageReference Include="Whisper.net.Runtime" Version="1.9.1" />
+    <!-- OpenVINO runtime for Intel Integrated/Discrete GPUs (e.g. Intel Iris Xe / Arc) -->
+    <PackageReference Include="Whisper.net.Runtime.OpenVino" Version="1.9.1" />
+  </ItemGroup>
+
+  <!-- Optional CUDA 12 Runtimes for NVIDIA GPU Configurations -->
+  <ItemGroup Condition=" '$(Configuration)' == 'Cuda12' ">
+    <PackageReference Include="Whisper.net.Runtime.Cuda12.Linux"
+                      Version="1.9.1"
+                      Condition="'$(RuntimeIdentifier)' == 'linux-x64'" />
+    <PackageReference Include="Whisper.net.Runtime.Cuda12.Windows"
+                      Version="1.9.1"
+                      Condition="'$(RuntimeIdentifier)' == 'win-x64'" />
+  </ItemGroup>
+
+  <!-- Optional Vulkan Runtime for Vulkan-accelerated Configurations -->
+  <ItemGroup Condition=" '$(Configuration)' == 'Vulkan' ">
+    <PackageReference Include="Whisper.net.Runtime.Vulkan"
+                      Version="1.9.1"
+                      Condition="'$(RuntimeIdentifier)' == 'win-x64'" />
+  </ItemGroup>
+
+  <!-- Offline Neural Text-to-Speech powered by Piper VITS via sherpa-onnx -->
+  <!-- Sherpa-ONNX Core C# API -->
+  <ItemGroup>
+    <PackageReference Include="org.k2fsa.sherpa.onnx" Version="1.13.8" />
+  </ItemGroup>
+
+  <!-- Sherpa-ONNX Cross-Platform Native Runtimes -->
+  <ItemGroup>
+    <!-- Linux (PC / Servers) -->
+    <PackageReference Include="org.k2fsa.sherpa.onnx.runtime.linux-x64" Version="1.13.8" />
+
+    <!-- Linux (Raspberry Pi 4/5 64-bit & ARM64 Boards) -->
+    <PackageReference Include="org.k2fsa.sherpa.onnx.runtime.linux-arm64" Version="1.13.8" />
+
+    <!-- Windows (x64) -->
+    <PackageReference Include="org.k2fsa.sherpa.onnx.runtime.win-x64" Version="1.13.8" />
+
+    <!-- macOS (Apple Silicon M1/M2/M3/M4) -->
+    <PackageReference Include="org.k2fsa.sherpa.onnx.runtime.osx-arm64" Version="1.13.8" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\README.md" Pack="true" PackagePath="/" />
+    <None Update="buildTransitive\MIG.Audio.targets" Pack="true" PackagePath="buildTransitive/MIG.Audio.targets" />
+  </ItemGroup>
+  <!-- Runtime packages provide their own assets transitively; do not flatten them into this package. -->
+  <Target Name="ExcludeDependencyContentFromPackage" BeforeTargets="_GetPackageFiles">
+    <ItemGroup>
+      <None Remove="$(NuGetPackageRoot)**/*" />
+      
+    </ItemGroup>
+  </Target>
+</Project>
+
+
+
+
+
+
+

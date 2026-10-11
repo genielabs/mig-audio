@@ -1,0 +1,63 @@
+version: 1.0.{build}
+image: Visual Studio 2022
+environment:
+  MIG_AUDIO_NUGET_API_KEY:
+    secure: VLSz2Mm3RJU7/uhvY1kOSfewPUL43YB7sxMOadvqUyrIFcU2DV2S84mtuySIJJX0
+install:
+  - ps: |
+      $ErrorActionPreference = 'Stop'
+      Invoke-WebRequest -Uri 'https://dot.net/v1/dotnet-install.ps1' -OutFile "$env:temp\dotnet-install.ps1"
+      & "$env:temp\dotnet-install.ps1" -Channel 10.0 -InstallDir "$env:ProgramFiles\dotnet"
+      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+configuration: Release
+build_script:
+  - dotnet build MIG.Audio.sln -c Release
+test_script:
+  - dotnet test MIG.Audio.Tests/MIG.Audio.Tests.csproj -c Release --no-build
+  - dotnet run --project Test.WebService -c Release --no-build -- --port=18088 --self-test
+after_test:
+  - ps: |
+      $ErrorActionPreference = 'Stop'
+      if ($env:APPVEYOR_REPO_TAG -eq "true") {
+        $pkgVersion = $env:APPVEYOR_REPO_TAG_NAME -replace '^v', ''
+        if ($pkgVersion -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$') {
+          throw "Expected a release tag such as v1.0.0 or v1.0.0-preview.1"
+        }
+      } else {
+        $pkgVersion = "1.0.0-preview.build.$env:APPVEYOR_BUILD_NUMBER"
+      }
+      $isPrerelease = ($pkgVersion -match '-').ToString().ToLowerInvariant()
+      Set-AppveyorBuildVariable -Name MIG_AUDIO_PRERELEASE -Value $isPrerelease
+      dotnet pack MIG.Audio/MIG.Audio.csproj -c Release --output artifacts /p:PackageVersion=$pkgVersion
+      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+artifacts:
+  - path: 'artifacts\*.nupkg'
+    name: NuGet Package
+  - path: 'artifacts\*.snupkg'
+    name: Symbols Package
+before_deploy:
+  - ps: |
+      if ($env:APPVEYOR_REPO_TAG -ne "true" -or $env:APPVEYOR_REPO_BRANCH -ne "main") { return }
+      $ErrorActionPreference = 'Stop'
+      $package = Get-ChildItem -LiteralPath artifacts -Filter 'MIG.Audio.*.nupkg'
+      $symbols = Get-ChildItem -LiteralPath artifacts -Filter 'MIG.Audio.*.snupkg'
+      if (@($package).Count -ne 1 -or @($symbols).Count -ne 1) {
+        throw 'Expected exactly one NuGet package and one symbol package'
+      }
+      dotnet nuget push $package.FullName --api-key $env:MIG_AUDIO_NUGET_API_KEY --source https://api.nuget.org/v3/index.json --no-symbols --skip-duplicate
+      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      dotnet nuget push $symbols.FullName --api-key $env:MIG_AUDIO_NUGET_API_KEY --source https://api.nuget.org/v3/index.json --skip-duplicate
+      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+deploy:
+  - provider: GitHub
+    tag: $(APPVEYOR_REPO_TAG_NAME)
+    release: MIG.Audio $(APPVEYOR_REPO_TAG_NAME)
+    description: Local speech recognition and synthesis for MIG and HomeGenie. See README for API usage, model installation and supported runtimes.
+    auth_token:
+      secure: QJoBiqbeg1z+3WRoH1IdXRsnXtvwS95U2Z89JH9DrnEhJYMYbRpKjUmGEbOU3OnDLFz8gKqzP8y7KpL226lCb/Y+W6CTt7EGouenMIKnzZBllZVvSG73LdhHgD8RbxIy
+    artifact: NuGet Package, Symbols Package
+    draft: false
+    prerelease: $(MIG_AUDIO_PRERELEASE)
+    on:
+      branch: main
+      appveyor_repo_tag: true

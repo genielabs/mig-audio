@@ -1,0 +1,11 @@
+<Project>
+  <!-- Whisper 1.9.1 exposes runtime files through build assets, which do not flow transitively. -->
+  <ItemGroup>
+    <None Include="$(NuGetPackageRoot)whisper.net.runtime/1.9.1/build/**/*.dll;$(NuGetPackageRoot)whisper.net.runtime/1.9.1/build/**/*.so;$(NuGetPackageRoot)whisper.net.runtime/1.9.1/build/**/*.dylib"
+          Visible="false" Pack="false" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"
+          TargetPath="runtimes/%(RecursiveDir)%(Filename)%(Extension)" />
+    <None Include="$(NuGetPackageRoot)whisper.net.runtime.openvino/1.9.1/build/**/*.dll;$(NuGetPackageRoot)whisper.net.runtime.openvino/1.9.1/build/**/*.so;$(NuGetPackageRoot)whisper.net.runtime.openvino/1.9.1/build/**/*.dylib"
+          Visible="false" Pack="false" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"
+          TargetPath="runtimes/openvino/%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>
